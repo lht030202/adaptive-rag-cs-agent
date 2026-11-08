@@ -45,3 +45,5 @@ class ChatResponse(BaseModel):
     error_code: str | None = None
     token_usage: TokenUsage = Field(default_factory=TokenUsage)
     latency: LatencyBreakdown = Field(default_factory=LatencyBreakdown)
+    # Set only when the multi-turn rewrite changed the question (e.g. resolved "它").
+    standalone_query: str | None = None

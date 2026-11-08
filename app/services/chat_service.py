@@ -167,7 +167,10 @@ class ChatService:
     ) -> AgentState:
         confirmed_action = self._resolve_confirmation(request, session_id)
         sessions = SessionRepository(db)
-        await sessions.get_or_create(session_id, request.user_id)
+        session_row = await sessions.get_or_create(session_id, request.user_id)
+        # History now reaches prompts, so a session id must not leak another user's turns.
+        if session_row.user_id != request.user_id:
+            raise InvalidRequestError("会话不存在或不属于当前用户，请新建会话。")
         history = await sessions.recent_messages(session_id)
         return {
             "trace_id": trace_id,
@@ -175,7 +178,7 @@ class ChatService:
             "user_id": request.user_id,
             "user_query": request.message,
             "messages": history,
-            "summary": "",
+            "summary": session_row.summary or "",
             "retrieved_chunks": [],
             "tool_results": [],
             "citations": [],
@@ -253,7 +256,11 @@ class ChatService:
         answer = result.get("final_answer") or "暂时无法回答，请稍后重试。"
         strategy = result.get("strategy")
         intent = result.get("intent")
+        original = result.get("original_query")
+        rewritten = result.get("user_query")
+        standalone = rewritten if original and rewritten and rewritten != original else None
         return ChatResponse(
+            standalone_query=standalone,
             answer=answer,
             session_id=session_id,
             trace_id=trace_id,

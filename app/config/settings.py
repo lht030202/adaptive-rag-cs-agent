@@ -29,6 +29,9 @@ class Settings(BaseSettings):
     deepseek_model: str = "deepseek-chat"
     llm_timeout_seconds: float = 30.0
     llm_max_retries: int = 3
+    # None = do not send `enable_thinking` and keep the provider default. Hybrid-thinking
+    # models on SiliconFlow (e.g. DeepSeek V4.1 Flash) think by default; False cuts latency.
+    llm_enable_thinking: bool | None = None
 
     embedding_api_key: SecretStr = SecretStr("")
     embedding_base_url: str = ""
@@ -60,6 +63,13 @@ class Settings(BaseSettings):
     compress_soft_ratio: float = 0.50
     compress_hard_ratio: float = 0.70
     auto_compact_ratio: float = 0.85
+    # Multi-turn context: recent turns feed the standalone-query rewrite and the answer
+    # prompt. False restores the original single-turn behaviour (used as the eval baseline).
+    memory_context_enabled: bool = True
+    memory_context_turns: int = 3
+    # Lexical intent overlay on top of LLM labels. Off by default: on a held-out set it
+    # lowered accuracy (96.9% -> 88.8%). Offline mode (no LLM) always keeps it.
+    intent_overlay_enabled: bool = False
 
     max_agent_steps: int = 8
     max_tool_calls: int = 6

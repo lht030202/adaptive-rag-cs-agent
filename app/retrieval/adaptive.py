@@ -23,6 +23,11 @@ from app.providers.fake import OfflineLLMProvider
 from app.providers.json_parser import parse_model
 from app.schemas.agent import ComplexityResult, IntentResult
 
+# Only social turns may skip retrieval. A policy or order question routed to DIRECT
+# is answered without evidence, which is a guaranteed miss (observed with LLM routing:
+# "电子发票多久能开" went DIRECT and the answer said no policy was available).
+_NO_RETRIEVAL_INTENTS = frozenset({IntentLabel.GREETING, IntentLabel.CHITCHAT})
+
 _MULTI_HOP_CUES = (
     "同时",
     "并且",
@@ -161,6 +166,13 @@ class AdaptiveRouter:
                 return fallback
             if _ORDER_ID.search(query) and fallback.strategy == RetrievalStrategy.AGENT:
                 return fallback
+            if (
+                parsed.strategy == RetrievalStrategy.DIRECT
+                and intent.label not in _NO_RETRIEVAL_INTENTS
+            ):
+                return fallback.model_copy(
+                    update={"rationale": f"guard_direct_needs_evidence:{fallback.rationale}"}
+                )
             return parsed
         except (LLMProviderError, LLMOutputError):
             return fallback

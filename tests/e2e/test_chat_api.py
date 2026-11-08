@@ -80,3 +80,33 @@ def test_admin_tools_open_in_testing() -> None:
         assert "get_order" in body["tools"]
         assert "mcp_store_hours" in body["tools"]
         assert "mcp_warehouse_cutoff" in body["tools"]
+
+
+def test_follow_up_reference_resolves_order_from_history() -> None:
+    with _client() as client:
+        first = client.post(
+            "/api/v1/chat",
+            json={"message": "帮我查一下订单 ORD10003 现在什么状态", "user_id": "u_multiturn"},
+        ).json()
+        second = client.post(
+            "/api/v1/chat",
+            json={
+                "message": "那帮我把它取消掉",
+                "user_id": "u_multiturn",
+                "session_id": first["session_id"],
+            },
+        ).json()
+    assert second["standalone_query"]
+    assert second["pending_action"]["tool_name"] == "cancel_order"
+    assert second["pending_action"]["arguments"]["order_id"] == "ORD10003"
+
+
+def test_session_of_another_user_is_rejected() -> None:
+    with _client() as client:
+        first = client.post("/api/v1/chat", json={"message": "你好", "user_id": "u_owner"}).json()
+        response = client.post(
+            "/api/v1/chat",
+            json={"message": "你好", "user_id": "u_other", "session_id": first["session_id"]},
+        )
+    assert response.status_code == 400
+    assert response.json()["error_code"] == "INVALID_REQUEST"

@@ -29,8 +29,12 @@ from eval.metrics import (
 
 ROOT = Path(__file__).resolve().parents[1]
 INTENT_PATH = ROOT / "eval/dataset/intent_100.jsonl"
+# Written after the overlay rules and prompt examples, never used to tune either:
+# the honest estimate of how intent classification generalises.
+INTENT_HELDOUT_PATH = ROOT / "eval/dataset/intent_heldout.jsonl"
 RAG_PATH = ROOT / "eval/dataset/rag_eval.jsonl"
 E2E_PATH = ROOT / "eval/dataset/e2e_eval.jsonl"
+MULTITURN_PATH = ROOT / "eval/dataset/multiturn_eval.jsonl"
 REPORT_DIR = ROOT / "eval/reports"
 
 
@@ -73,10 +77,10 @@ def _keyword_hit(answer: str, keywords: list[str]) -> bool:
     return all(word in answer for word in keywords)
 
 
-def eval_intent_rules() -> dict:
+def eval_intent_rules(path: Path = INTENT_PATH) -> dict:
     from app.agents.nodes.intent import rule_based_intent
 
-    rows = load_jsonl(INTENT_PATH)
+    rows = load_jsonl(path)
     pairs = [(row["intent"], rule_based_intent(row["query"]).label.value) for row in rows]
     return {
         "backend": "rules",
@@ -87,7 +91,7 @@ def eval_intent_rules() -> dict:
     }
 
 
-async def eval_intent_llm(*, version: str, overlay: bool) -> dict:
+async def eval_intent_llm(*, version: str, overlay: bool, path: Path = INTENT_PATH) -> dict:
     from app.agents.nodes.intent import IntentClassifier
     from app.config.settings import get_settings
     from app.prompts.intent import INTENT_SYSTEM, INTENT_SYSTEM_V1, INTENT_SYSTEM_V2
@@ -108,7 +112,7 @@ async def eval_intent_llm(*, version: str, overlay: bool) -> dict:
         prompt_version=version,
         apply_overlay=overlay,
     )
-    rows = load_jsonl(INTENT_PATH)
+    rows = load_jsonl(path)
     semaphore = asyncio.Semaphore(4)
     errors = 0
 
@@ -140,10 +144,10 @@ async def eval_intent_llm(*, version: str, overlay: bool) -> dict:
     }
 
 
-def eval_intent_overlay() -> dict:
+def eval_intent_overlay(path: Path = INTENT_PATH) -> dict:
     from app.agents.nodes.intent_overlay import high_precision_intent
 
-    rows = load_jsonl(INTENT_PATH)
+    rows = load_jsonl(path)
     pairs = []
     uncovered = 0
     for row in rows:
@@ -472,6 +476,83 @@ async def eval_e2e() -> dict:
     }
 
 
+def multiturn_pass(
+    expect: dict, answer: str, pending_tool: str | None, order_id: str | None
+) -> bool:
+    """Grade the final turn of a dialogue against its expectations."""
+    if "pending_tool" in expect:
+        if pending_tool != expect["pending_tool"]:
+            return False
+        if expect.get("order_id") and order_id != expect["order_id"]:
+            return False
+    if any(keyword not in answer for keyword in expect.get("all", [])):
+        return False
+    any_keywords = expect.get("any", [])
+    return not any_keywords or any(keyword in answer for keyword in any_keywords)
+
+
+async def eval_multiturn(*, memory_context: bool) -> dict:
+    """Run each dialogue in one session; only the last turn is graded.
+
+    memory_context=False sets MEMORY_CONTEXT_ENABLED=false, i.e. the original
+    single-turn pipeline, so the two runs differ only in the multi-turn context.
+    """
+    import os
+
+    os.environ["RATE_LIMIT_PER_MINUTE"] = "1000"
+    os.environ["MEMORY_CONTEXT_ENABLED"] = "true" if memory_context else "false"
+    from app.config.settings import clear_settings_cache, get_settings
+    from app.schemas.chat import ChatRequest
+    from app.services.container import build_container
+
+    clear_settings_cache()
+    settings = get_settings()
+    if not settings.llm_configured:
+        raise SystemExit("DEEPSEEK_API_KEY missing")
+    container = await build_container(settings, seed=True)
+    rows = load_jsonl(MULTITURN_PATH)
+    passed = 0
+    cases = []
+    try:
+        for row in rows:
+            session_id = None
+            response = None
+            for turn in row["turns"]:
+                request = ChatRequest(message=turn, user_id="u_demo", session_id=session_id)
+                response = await container.chat_service.chat(request, trace_id=f"mt_{row['id']}")
+                session_id = response.session_id
+            assert response is not None
+            pending = response.pending_action
+            ok = multiturn_pass(
+                row["expect"],
+                response.answer,
+                pending.tool_name if pending else None,
+                str(pending.arguments.get("order_id")) if pending else None,
+            )
+            passed += int(ok)
+            cases.append(
+                {
+                    "id": row["id"],
+                    "pass": ok,
+                    "last_turn": row["turns"][-1],
+                    "standalone_query": response.standalone_query,
+                    "strategy": response.strategy.value if response.strategy else None,
+                    "answer": response.answer[:200],
+                }
+            )
+    finally:
+        await container.aclose()
+        os.environ.pop("MEMORY_CONTEXT_ENABLED", None)
+        clear_settings_cache()
+    return {
+        "memory_context": memory_context,
+        "n": len(rows),
+        "passed": passed,
+        "task_success": round(passed / len(rows), 4) if rows else 0.0,
+        "cases": cases,
+    }
+
+
 def _resume_bullets(report: dict) -> list[str]:
     bullets = []
     intent_rules = report.get("intent_rules")
@@ -565,10 +646,16 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--task",
-        choices=["all", "intent", "retrieval", "generation", "e2e"],
+        choices=["all", "intent", "intent_heldout", "retrieval", "generation", "e2e", "multiturn"],
         default="all",
     )
     parser.add_argument("--llm", action="store_true")
+    parser.add_argument(
+        "--memory",
+        choices=["both", "off", "on"],
+        default="both",
+        help="multiturn only: run the memory-off baseline, the memory-on run, or both",
+    )
     args = parser.parse_args()
 
     async def _go() -> dict:
@@ -585,6 +672,27 @@ def main() -> None:
                 result["intent_v3"] = await eval_intent_llm(version="intent_v3", overlay=True)
             result["resume_bullets"] = _resume_bullets(result)
             return result
+        if args.task == "intent_heldout":
+            heldout: dict[str, Any] = {
+                "intent_rules": eval_intent_rules(INTENT_HELDOUT_PATH),
+                "intent_overlay": eval_intent_overlay(INTENT_HELDOUT_PATH),
+            }
+            if args.llm:
+                for name, path in (("original_100", INTENT_PATH), ("heldout", INTENT_HELDOUT_PATH)):
+                    heldout[f"{name}_llm_only"] = await eval_intent_llm(
+                        version="intent_v3", overlay=False, path=path
+                    )
+                    heldout[f"{name}_llm_overlay"] = await eval_intent_llm(
+                        version="intent_v3", overlay=True, path=path
+                    )
+            return heldout
+        if args.task == "multiturn":
+            multiturn: dict[str, Any] = {}
+            if args.memory in {"both", "off"}:
+                multiturn["memory_off"] = await eval_multiturn(memory_context=False)
+            if args.memory in {"both", "on"}:
+                multiturn["memory_on"] = await eval_multiturn(memory_context=True)
+            return multiturn
         if args.task == "retrieval":
             return {"retrieval": await eval_retrieval()}
         if args.task == "generation":

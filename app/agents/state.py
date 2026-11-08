@@ -20,6 +20,8 @@ class AgentState(TypedDict, total=False):
     session_id: str
     user_id: str
     user_query: str
+    # Raw user text when contextualize_query rewrote user_query into a standalone question.
+    original_query: str
     messages: list[ChatMessage]
     summary: str
     intent: IntentResult | None

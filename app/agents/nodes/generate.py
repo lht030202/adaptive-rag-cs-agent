@@ -8,8 +8,10 @@ import time
 from pydantic import BaseModel, Field
 
 from app.agents.state import AgentState
+from app.config.settings import Settings
 from app.core.enums import RetrievalStrategy
 from app.core.exceptions import LLMOutputError, LLMProviderError
+from app.memory.context import render_history
 from app.prompts.answer import ANSWER_SYSTEM, ANSWER_USER
 from app.providers.base import LLMProvider
 from app.providers.fake import OfflineLLMProvider
@@ -24,7 +26,9 @@ class AnswerPayload(BaseModel):
     refused: bool = False
 
 
-async def generate_node(state: AgentState, llm: LLMProvider) -> dict:
+async def generate_node(
+    state: AgentState, llm: LLMProvider, settings: Settings | None = None
+) -> dict:
     started = time.perf_counter()
     chunks = state.get("retrieved_chunks") or []
     tools = state.get("tool_results") or []
@@ -65,6 +69,13 @@ async def generate_node(state: AgentState, llm: LLMProvider) -> dict:
             if chunk.chunk_id in citation_ids
         ]
         return {"final_answer": answer, "citations": citations, "refused": False}
+    history = ""
+    if settings is not None and settings.memory_context_enabled:
+        history = render_history(
+            state.get("messages") or [],
+            state.get("summary") or "",
+            turns=settings.memory_context_turns,
+        )
     messages = [
         {"role": "system", "content": ANSWER_SYSTEM},
         {
@@ -73,6 +84,7 @@ async def generate_node(state: AgentState, llm: LLMProvider) -> dict:
                 query=state["user_query"],
                 intent=intent.label.value if intent else "unknown",
                 strategy=strategy.value,
+                history=history or "（无）",
                 evidence=evidence,
                 tool_results=tool_text,
             ),
