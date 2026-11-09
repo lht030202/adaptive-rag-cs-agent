@@ -317,7 +317,8 @@ async def eval_generation() -> dict:
     bm25, store, _ = await ingest_to_memory("knowledge", embedder)
     retriever = HybridRetriever(bm25, VectorRetriever(store, embedder), rrf_k=60)
     rows = load_jsonl(RAG_PATH)
-    semaphore = asyncio.Semaphore(3)
+    # Slow judges (e.g. ~11 s per verdict) need more parallel rows to finish in time.
+    semaphore = asyncio.Semaphore(int(os.environ.get("EVAL_CONCURRENCY", "3")))
 
     naive_supported = 0
     rag_supported = 0
