@@ -276,6 +276,7 @@ async def _generate_answer(llm, query: str, evidence: str) -> str:
                     query=query,
                     intent="faq_policy",
                     strategy="single",
+                    history="（无）",
                     evidence=evidence,
                     tool_results="(无)",
                 ),
@@ -289,6 +290,8 @@ async def _generate_answer(llm, query: str, evidence: str) -> str:
 
 
 async def eval_generation() -> dict:
+    import os
+
     from app.config.settings import get_settings
     from app.guardrails.hallucination import FaithfulnessChecker
     from app.providers.deepseek import DeepSeekProvider
@@ -301,7 +304,15 @@ async def eval_generation() -> dict:
     if not settings.llm_configured:
         raise SystemExit("DEEPSEEK_API_KEY missing")
     llm = DeepSeekProvider(settings)
-    checker = FaithfulnessChecker(llm)
+    # A judge from a different model family avoids the generator grading itself
+    # (self-preference bias). EVAL_JUDGE_MODEL unset = same model, as in the original.
+    judge_model = os.environ.get("EVAL_JUDGE_MODEL") or settings.deepseek_model
+    judge_llm = (
+        llm
+        if judge_model == settings.deepseek_model
+        else DeepSeekProvider(settings.model_copy(update={"deepseek_model": judge_model}))
+    )
+    checker = FaithfulnessChecker(judge_llm)
     embedder = build_embedding_provider(settings)
     bm25, store, _ = await ingest_to_memory("knowledge", embedder)
     retriever = HybridRetriever(bm25, VectorRetriever(store, embedder), rrf_k=60)
@@ -317,6 +328,7 @@ async def eval_generation() -> dict:
     naive_hallucinated = 0
     rag_hallucinated = 0
     checked_hallucinated = 0
+    judge_unavailable = {"naive": 0, "rag": 0, "rag_plus_self_check": 0}
 
     async def _one(row: dict) -> None:
         nonlocal naive_supported, rag_supported, checked_supported
@@ -349,6 +361,15 @@ async def eval_generation() -> dict:
                     tool_results_text="",
                     first_result=rag_judge,
                 )
+            # The checker fails closed (supported=False) when the judge call errors;
+            # count those separately so a flaky judge does not pose as hallucination.
+            for name, verdict in (
+                ("naive", naive_judge),
+                ("rag", rag_judge),
+                ("rag_plus_self_check", checked_judge),
+            ):
+                if verdict.rationale == "checker_unavailable":
+                    judge_unavailable[name] += 1
             keywords = row.get("gold_answer_contains") or []
             if naive_judge.supported:
                 naive_supported += 1
@@ -376,7 +397,9 @@ async def eval_generation() -> dict:
     drop = ((naive_h - checked_h) / naive_h) if naive_h else 0.0
     return {
         "n": n,
-        "judge": "deepseek-faithfulness_v1",
+        "generator_model": settings.deepseek_model,
+        "judge_model": judge_model,
+        "judge": "faithfulness_v1",
         "naive_no_context": {
             "faithfulness": round(naive_supported / n, 4),
             "hallucination_rate": round(naive_h, 4),
@@ -393,6 +416,7 @@ async def eval_generation() -> dict:
             "keyword_hit": round(checked_keyword / n, 4),
         },
         "hallucination_relative_drop": round(drop, 4),
+        "judge_unavailable": judge_unavailable,
         "note": "Hallucination = LLM judge supported=false. Relative drop is naive vs RAG+self-check.",
     }
 

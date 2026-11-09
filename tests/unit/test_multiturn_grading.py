@@ -23,3 +23,12 @@ def test_dataset_rows_are_well_formed() -> None:
     for row in rows:
         assert len(row["turns"]) >= 2
         assert row["expect"]
+
+
+async def test_generation_eval_prompt_formats_with_all_fields() -> None:
+    """Guards the eval's copy of the answer prompt against new template fields."""
+    from app.providers.fake import FakeLLMProvider
+    from eval.runner import _generate_answer
+
+    llm = FakeLLMProvider({"用户问题": '{"answer":"ok","citation_chunk_ids":[]}'})
+    assert await _generate_answer(llm, "运费谁出", "(无检索结果)") == "ok"
