@@ -13,6 +13,7 @@ from eval.metrics import (
     accuracy,
     classification_report,
     hit_at_k,
+    is_abstention,
     mrr,
     percentile,
     precision_at_k,
@@ -270,3 +271,11 @@ def test_resume_bullets_cover_every_section() -> None:
 def test_resume_bullets_without_earlier_intent_versions() -> None:
     bullets = _resume_bullets({"intent_v3": {"accuracy": 0.90, "n": 10}})
     assert bullets == ["意图识别：10 条 intent_v3+overlay 90.0%"]
+
+
+def test_is_abstention_reads_only_the_first_sentence() -> None:
+    assert is_abstention("目前没有可依据的退货政策，无法确认。请转人工。")
+    assert is_abstention("现有资料没有写明门槛金额，因此无法确认。建议转人工。")
+    # A real answer that only mentions a fallback later is not an abstention.
+    assert not is_abstention("定制商品不适用七天无理由退货。如无法确认是否定制，可转人工。")
+    assert not is_abstention("")

@@ -26,6 +26,7 @@ from app.providers.embeddings import build_embedding_provider  # noqa: E402
 from app.retrieval.hybrid import HybridRetriever  # noqa: E402
 from app.retrieval.ingest import ingest_to_memory  # noqa: E402
 from app.retrieval.vector import VectorRetriever  # noqa: E402
+from eval.metrics import is_abstention  # noqa: E402
 from eval.runner import RAG_PATH, REPORT_DIR, _generate_answer, load_jsonl  # noqa: E402
 
 DEFAULT_JUDGES = [
@@ -131,6 +132,11 @@ async def main(judge_models: list[str], concurrency: int) -> None:
             "cohen_kappa": round(cohen_kappa(xs, ys), 4),
         }
     summary["agreement"] = agreement
+    # Abstentions ("无法确认…") are not fabrications, but judges often score them unsupported;
+    # report them so a low no-context faithfulness is not misread as a hallucination rate.
+    summary["abstentions"] = {
+        cond: sum(is_abstention(item["answers"][cond]) for item in items) for cond in CONDITIONS
+    }
     print(json.dumps(summary, ensure_ascii=False, indent=2))
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
     out = REPORT_DIR / f"judge_compare_{datetime.now(UTC):%Y%m%dT%H%M%SZ}.json"
