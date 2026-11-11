@@ -10,6 +10,7 @@ from dataclasses import dataclass
 
 from app.core.exceptions import RetrievalError
 from app.providers.base import EmbeddingProvider
+from app.retrieval.cleaning import normalize_text
 from app.schemas.retrieval import RetrievedChunk
 
 logger = logging.getLogger(__name__)
@@ -159,7 +160,8 @@ class VectorRetriever:
         self.embedder = embedder
 
     async def search(self, query: str, *, top_k: int) -> list[RetrievedChunk]:
-        vectors = await self.embedder.embed([query])
+        # Same cleaning as the indexed chunks; see BM25Retriever.search.
+        vectors = await self.embedder.embed([normalize_text(query)])
         if not vectors:
             return []
         # Qdrant client is sync; do not block the event loop.

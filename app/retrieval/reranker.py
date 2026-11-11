@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from app.providers.base import RerankProvider
+from app.retrieval.cleaning import normalize_text
 from app.schemas.retrieval import RetrievedChunk
 
 
@@ -20,7 +21,10 @@ class DocumentReranker:
         if not chunks:
             return []
         documents = [chunk.content for chunk in chunks]
-        ranked = await self._provider.rerank(query, documents, top_n=min(top_n, len(chunks)))
+        # The chunks were cleaned at ingest; score them against an equally clean query.
+        ranked = await self._provider.rerank(
+            normalize_text(query), documents, top_n=min(top_n, len(chunks))
+        )
         results: list[RetrievedChunk] = []
         for new_rank, (original_index, score) in enumerate(ranked, start=1):
             chunk = chunks[original_index].model_copy(deep=True)

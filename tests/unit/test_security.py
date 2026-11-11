@@ -13,6 +13,27 @@ def test_mask_phone_id_bank_and_order() -> None:
     assert f"ORD{PII_MASK}67" in masked
 
 
+def test_mask_short_demo_order_ids() -> None:
+    masked = mask_pii("订单 ORD10003 已发货，另一单 ORD1001")
+    assert "ORD10003" not in masked
+    assert "ORD1001" not in masked
+    assert f"ORD{PII_MASK}03" in masked
+    assert f"ORD{PII_MASK}01" in masked
+
+
+def test_mask_identifiers_written_right_after_chinese() -> None:
+    # Chinese text rarely puts a space before a number; \b sees no boundary there.
+    masked = mask_pii("卡号6222021234567890，身份证110101199003071234，订单ORD10003已发货")
+    assert "6222021234567890" not in masked
+    assert "110101199003071234" not in masked
+    assert "ORD10003" not in masked
+
+
+def test_order_mask_ignores_words_and_short_codes() -> None:
+    assert mask_pii("ORDER 已创建") == "ORDER 已创建"
+    assert mask_pii("优惠码 ORD12") == "优惠码 ORD12"
+
+
 def test_redact_mapping_masks_secrets_and_nested_strings() -> None:
     payload = {
         "api_key": "sk-live-secret",

@@ -6,6 +6,7 @@ from collections import defaultdict
 
 from rank_bm25 import BM25Okapi
 
+from app.retrieval.cleaning import normalize_text
 from app.retrieval.tokenizer import tokenize
 from app.schemas.retrieval import RetrievedChunk
 
@@ -28,7 +29,9 @@ class BM25Retriever:
     def search(self, query: str, *, top_k: int) -> list[RetrievedChunk]:
         if self._bm25 is None or not self._chunks:
             return []
-        scores = self._bm25.get_scores(tokenize(query))
+        # Chunks were cleaned with normalize_text at ingest. Clean the query the same way,
+        # or full-width input such as "满５９" no longer matches "59" in the index.
+        scores = self._bm25.get_scores(tokenize(normalize_text(query)))
         ranked = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:top_k]
         results: list[RetrievedChunk] = []
         for rank, index in enumerate(ranked, start=1):
